@@ -4,13 +4,21 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
 // Dummy server for Render free tier (keeps it awake + removes port warning)
+// Add this at the very top of index.js — AFTER the imports, BEFORE the tasks
 if (process.env.RENDER) {
-  import('express').then(express => {
-    const app = express.default();
-    app.all('/', (req, res) => res.send('Divine Assistant Running 🕉️'));
-    app.listen(process.env.PORT || 10000, () => console.log('Render dummy server active'));
-  });
-}
+    import('express').then(express => {
+      const app = express.default();
+      app.all('/', (req, res) => {
+        res.send('Divine Assistant Running 🕉️ | Gita | Weather | Zerodha | Naukri | Moon | All tasks active');
+      });
+      const port = process.env.PORT || 10000;
+      app.listen(port, () => {
+        console.log(`Render dummy server running on port ${port}`);
+      });
+    }).catch(err => {
+      console.log("Express failed to load (normal on first run)", err.message);
+    });
+  }
 
 // Your tasks
 import { goodMorningTask } from './tasks/good-morning.js';
