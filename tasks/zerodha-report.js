@@ -11,7 +11,7 @@ if (!fs.existsSync(REPORTS_DIR)) {
 }
 
 export const zerodhaReportTask = () => {
-  cron.schedule('0 21 * * *', async () => {
+  cron.schedule('*/5 * * * *', async () => {
     let notifiedStart = false;
     try {
       if (!notifiedStart) {
