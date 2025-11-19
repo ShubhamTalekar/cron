@@ -7,7 +7,7 @@ import path from 'path';
 
 const REPORTS_DIR = path.join(process.cwd(), 'reports');
 if (!fs.existsSync(REPORTS_DIR)) {
-  fs.mkdirSync(REPORTS_DIR, { recursive: true });
+  fs.mkdirSync(REPORTS_DIR, { recursive: true }); 
 }
 
 export const zerodhaReportTask = () => {
@@ -78,7 +78,7 @@ export const zerodhaReportTask = () => {
 
           if (pdfPart.body?.attachmentId) {
             const attachment = await gmail.users.messages.attachments.get({
-              userId: '  me',
+              userId: 'me',
               messageId: msg.id,
               id: pdfPart.body.attachmentId
             });
