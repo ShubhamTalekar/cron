@@ -15,6 +15,13 @@ import { weeklyReviewTask } from './tasks/weekly-review.js';
 import { rainAlertTask } from './tasks/rain-alert.js';
 import { stockAlertTask } from './tasks/stock-alert.js';
 
+if (process.env.RENDER) {
+    const express = require('express');
+    const app = express();
+    app.all('/', (req, res) => res.send('Divine Assistant Running 🕉️'));
+    app.listen(process.env.PORT || 10000);
+  }
+
 console.log("Starting Your Divine Personal Assistant...\n");
 
 goodMorningTask();
