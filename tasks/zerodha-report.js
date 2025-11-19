@@ -1,136 +1,85 @@
-// tasks/zerodha-report.js  ←  FINAL ROBUST VERSION
+// tasks/zerodha-report.js  ←  HEADLESS GMAIL LOGIN (NO API, NO TOKEN ISSUES)
 import cron from 'node-cron';
 import { notify } from '../utils/notify.js';
-import { gmail } from '../utils/gmail.js';
+import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
 
-const REPORTS_DIR = path.join(process.cwd(), 'reports');
-if (!fs.existsSync(REPORTS_DIR)) {
-  fs.mkdirSync(REPORTS_DIR, { recursive: true }); 
+const GMAIL_EMAIL = process.env.GMAIL_EMAIL;     // your@gmail.com
+const GMAIL_PASS = process.env.GMAIL_PASS;       // your password or app password
+
+if (!GMAIL_EMAIL || !GMAIL_PASS) {
+  console.error("GMAIL_EMAIL and GMAIL_PASS must be in .env");
 }
 
 export const zerodhaReportTask = () => {
-  cron.schedule('*/5 * * * *', async () => {
-    let notifiedStart = false;
+  cron.schedule('0 21 * * *', async () => {
+    await notify('🔍 Opening Gmail to find Zerodha Aftermarket Report...');
+
+    let browser;
     try {
-      if (!notifiedStart) {
-        await notify('🔍 Looking for today\'s Zerodha Aftermarket Report...');
-        notifiedStart = true;
-      }
-
-      // Search last 2 days (in case email is delayed or holiday yesterday)
-      const today = new Date();
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-
-      const formatDate = (d) => d.toISOString().split('T')[0].replace(/-/g, '/');
-      const query = `from:reports@zerodha.com subject:"Aftermarket order update" after:${formatDate(yesterday)}`;
-
-      const res = await gmail.users.messages.list({
-        userId: 'me',
-        q: query,
-        maxResults: 5   // get a few in case multiple
+      browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
       });
 
-      const messages = res.data.messages || [];
-      if (messages.length === 0) {
-        await notify('ℹ️ No Zerodha report found (market holiday or no trades today)');
+      const page = await browser.newPage();
+      await page.goto('https://mail.google.com', { waitUntil: 'networkidle2' });
+
+      // Login
+      await page.type('input[type="email"]', GMAIL_EMAIL);
+      await page.click('#identifierNext');
+      await page.waitForTimeout(2000);
+      await page.type('input[type="password"]', GMAIL_PASS);
+      await page.click('#passwordNext');
+      await page.waitForNavigation({ waitUntil: 'networkidle2' });
+
+      // Search for Zerodha report
+      await page.type('input[aria-label="Search in mail"]', 'from:reports@zerodha.com "Aftermarket order update"');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(5000);
+
+      // Click the first (latest) email
+      await page.click('div[role="main"] tr.zA:first-child');
+      await page.waitForTimeout(5000);
+
+      // Find and download PDF attachment
+      const pdfLink = await page.$eval('a[href$=".pdf"]', el => el.href);
+      if (!pdfLink) {
+        await notify('No PDF found in the email');
+        await browser.close();
         return;
       }
 
-      // Find the most recent email with PDF
-      let pdfDelivered = false;
-      for (const msg of messages) {
-        if (pdfDelivered) break;
+      const response = await page.goto(pdfLink);
+      const buffer = await response.buffer();
 
-        try {
-          const fullMsg = await gmail.users.messages.get({
-            userId: 'me',
-            id: msg.id,
-            format: 'full'
-          });
+      // Save locally
+      const filename = `Zerodha-Report-${new Date().toISOString().split('T')[0]}.pdf`;
+      const savePath = path.join(process.cwd(), 'reports', filename);
+      fs.mkdirSync(path.dirname(savePath), { recursive: true });
+      fs.writeFileSync(savePath, buffer);
 
-          const headers = fullMsg.data.payload.headers;
-          const dateHeader = headers.find(h => h.name === 'Date');
-          const emailDate = dateHeader ? new Date(dateHeader.value) : new Date();
-          const dateStr = emailDate.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+      // Send to Telegram
+      const form = new FormData();
+      form.append('chat_id', process.env.TELEGRAM_CHAT_ID);
+      form.append('document', buffer, { filename });
+      form.append('caption', `*Zerodha Aftermarket Report Delivered!* 📊\nDate: ${new Date().toLocaleDateString('en-IN')}`);
 
-          // Recursive find PDF in nested parts
-          const findPdf = (parts) => {
-            for (const part of parts || []) {
-              if (part.mimeType === 'application/pdf' && part.filename) return part;
-              if (part.parts) {
-                const found = findPdf(part.parts);
-                if (found) return found;
-              }
-            }
-            return null;
-          };
+      await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+        method: 'POST',
+        body: form
+      });
 
-          const pdfPart = findPdf(fullMsg.data.payload.parts) ||
-                         (fullMsg.data.payload.mimeType === 'application/pdf' ? fullMsg.data.payload : null);
-
-          if (!pdfPart) continue;
-
-          let pdfBuffer;
-          let filename = pdfPart.filename || `Zerodha-Report-${today.toISOString().split('T')[0]}.pdf`;
-
-          if (pdfPart.body?.attachmentId) {
-            const attachment = await gmail.users.messages.attachments.get({
-              userId: 'me',
-              messageId: msg.id,
-              id: pdfPart.body.attachmentId
-            });
-            const data = attachment.data.data.replace(/-/g, '+').replace(/_/g, '/');
-            pdfBuffer = Buffer.from(data, 'base64');
-          } else if (pdfPart.body?.data) {
-            const data = pdfPart.body.data.replace(/-/g, '+').replace(/_/g, '/');
-            pdfBuffer = Buffer.from(data, 'base64');
-          } else {
-            continue;
-          }
-
-          // Save locally
-          const savePath = path.join(REPORTS_DIR, filename);
-          fs.writeFileSync(savePath, pdfBuffer);
-
-          // Send to Telegram
-          const form = new FormData();
-          form.append('chat_id', process.env.TELEGRAM_CHAT_ID);
-          form.append('document', pdfBuffer, { filename });
-          form.append('caption', `*Zerodha Aftermarket Report* 📊\n\nDate: ${dateStr}\nSize: ${(pdfBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-
-          const telegramRes = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
-            method: 'POST',
-            body: form
-          });
-
-          if (telegramRes.ok) {
-            await notify(`✅ *Zerodha Report Delivered!* 📄\n${filename}\nSee PDF above ↑`);
-            pdfDelivered = true;
-          } else {
-            const err = await telegramRes.text();
-            await notify(`⚠️ Report downloaded but Telegram send failed:\n${err}`);
-          }
-        } catch (e) {
-          console.error('Error processing message', msg.id, e);
-          continue; // try next email
-        }
-      }
-
-      if (!pdfDelivered) {
-        await notify('⚠️ Found Zerodha emails but no PDF attachment');
-      }
+      await notify(`PDF delivered! See above ↑`);
 
     } catch (err) {
-      console.error('Zerodha task crashed:', err);
-      await notify(`❌ Zerodha report error: ${err.message || err}`);
+      console.error(err);
+      await notify(`Zerodha report failed: ${err.message}`);
+    } finally {
+      if (browser) await browser.close();
     }
-  }, {
-    scheduled: true,
-    timezone: "Asia/Kolkata"
-  }).start();
+  }, { timezone: "Asia/Kolkata" }).start();
 
-  console.log("✅ Zerodha Report → Robust delivery to Telegram at 9:00 PM daily");
+  console.log("Zerodha Report → Headless Gmail login (no API) at 9:00 PM daily");
 };
